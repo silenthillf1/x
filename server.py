@@ -20,6 +20,7 @@ import uuid as uuidlib
 from urllib.parse import parse_qs, quote, unquote
 
 PORT = int(os.environ.get("PORT", "8080"))
+EXTRA_PORTS = [int(x) for x in os.environ.get("EXTRA_PORTS", "80").replace(" ", "").split(",") if x.isdigit()]
 NAME = os.environ.get("CONFIG_NAME", "SILENT HILL f")
 TLS_PORT = int(os.environ.get("TLS_PORT", "443"))
 # Non-TLS: Railway TCP Proxy host/port are picked up automatically (or set PLAIN_HOST / PLAIN_PORT).
@@ -86,7 +87,7 @@ def build_links(req_host: str):
             f"&type=ws&host={plain_host}&path={p}#{quote(NAME + '-NonTLS')}"
         )
     else:
-        note = "Is platform par non-TLS available nahi (raw TCP port nahi hai). Sirf TLS link use karo."
+        note = "Non-TLS ke liye Railway ma TCP Proxy banao (port 80 ya 8080), phir Redeploy karo. Tab tak sirf TLS link use karo."
     return {
         "tls": tls,
         "plain": plain,
@@ -884,14 +885,27 @@ async def handle(reader, writer):
             pass
 
 
-async def main():
+async def _listen(port: int):
     try:
-        server = await asyncio.start_server(handle, None, PORT, limit=READ_SIZE, backlog=1024)
+        return await asyncio.start_server(handle, None, port, limit=READ_SIZE, backlog=1024)
     except OSError:
-        server = await asyncio.start_server(handle, "0.0.0.0", PORT, limit=READ_SIZE, backlog=1024)
-    print(f"[vless-ws] listening on :{PORT}  uuid={UUID}", flush=True)
-    async with server:
-        await server.serve_forever()
+        return await asyncio.start_server(handle, "0.0.0.0", port, limit=READ_SIZE, backlog=1024)
+
+
+async def main():
+    # Main port (Railway domain) + extra port (Railway TCP Proxy usually targets :80).
+    servers = [await _listen(PORT)]
+    ports = [PORT]
+    for p in EXTRA_PORTS:
+        if p in ports:
+            continue
+        try:
+            servers.append(await _listen(p))
+            ports.append(p)
+        except OSError as e:
+            print(f"[vless-ws] extra port {p} not available: {e}", flush=True)
+    print(f"[vless-ws] listening on :{', :'.join(map(str, ports))}  uuid={UUID}", flush=True)
+    await asyncio.gather(*(sv.serve_forever() for sv in servers))
 
 
 if __name__ == "__main__":
